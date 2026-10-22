@@ -13,7 +13,7 @@ using System.Security.Cryptography;
 using Microsoft.Win32;
 
 static class SetupCore {
-    public const string Version = "0.6.6 beta";
+    public const string Version = "0.6.7 beta";
     public static string Root = AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
     public static string PSQuote(string s) { return "'" + s.Replace("'", "''") + "'"; }
     static bool HasGame(string path) { return File.Exists(Path.Combine(path, "F1Manager24", "Binaries", "Win64", "F1Manager24.exe")); }
