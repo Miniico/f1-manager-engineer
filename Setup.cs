@@ -13,7 +13,7 @@ using System.Security.Cryptography;
 using Microsoft.Win32;
 
 static class SetupCore {
-    public const string Version = "0.6.9 beta";
+    public const string Version = "0.6.11 beta";
     public static string Root = AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
     public static string PSQuote(string s) { return "'" + s.Replace("'", "''") + "'"; }
     static bool HasGame(string path) { return File.Exists(Path.Combine(path, "F1Manager24", "Binaries", "Win64", "F1Manager24.exe")); }
@@ -174,6 +174,15 @@ static class SetupCore {
         string ps=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows),"System32","WindowsPowerShell","v1.0","powershell.exe");
         return Run(ps,"-NoProfile -NonInteractive -InputFormat Text -OutputFormat Text -ExecutionPolicy Bypass -EncodedCommand "+Convert.ToBase64String(Encoding.Unicode.GetBytes(ScriptCommand(action,game,python))),null,120000);
     }
+    public static string ReaderStatus(Dictionary<string,object> state,double now) {
+        string code=Get(state,"code");
+        if(code=="")return "no diagnostic status yet";
+        double stamp;
+        if(!Double.TryParse(Get(state,"time"),System.Globalization.NumberStyles.Float,System.Globalization.CultureInfo.InvariantCulture,out stamp)
+            ||Double.IsNaN(stamp)||Double.IsInfinity(stamp)||now-stamp<0||now-stamp>=15)
+            return "inactive or stale (last status: "+code+")";
+        return code+" (recent heartbeat)";
+    }
     public static string Diagnostics(string game,string python) {
         var report=new StringBuilder("F1 Manager Engineer "+Version+Environment.NewLine);
         report.AppendLine("Reader runtime: "+(String.Equals(python,BundledPython,StringComparison.OrdinalIgnoreCase)?"included with this package":"external / advanced"));
@@ -197,8 +206,8 @@ static class SetupCore {
             report.AppendLine("Installation is absent. The old record will be archived when you choose Install.");
         report.AppendLine(String.Format("Installed files: {0} verified, {1} changed/unreadable, {2} missing",matching,changed,missing));
         var state=ReadObject(Path.Combine(Root,"data","reader-state.json"));
-        report.AppendLine("Reader status: "+(Get(state,"code")==""?"no diagnostic status yet":Get(state,"code")));
-        report.AppendLine("Save loaded: "+(File.Exists(Path.Combine(Root,"data","snapshot.lua"))?"yes":"no"));
+        report.AppendLine("Reader status: "+ReaderStatus(state,(DateTime.UtcNow-new DateTime(1970,1,1,0,0,0,DateTimeKind.Utc)).TotalSeconds));
+        report.AppendLine("Saved snapshot: "+(File.Exists(Path.Combine(Root,"data","snapshot.lua"))?"present (last successful output; freshness not confirmed)":"absent"));
         report.AppendLine("Report excludes paths, usernames, save contents and log excerpts. Nothing is uploaded.");
         return report.ToString();
     }
@@ -208,7 +217,13 @@ static class SetupCore {
         if(!PSQuote(@"D:\A's game\$()").Contains("'D:\\A''s game\\$()'"))throw new Exception("Path quoting");
         bool rejected=false;try{ScriptCommand("Erase","","");}catch(ArgumentException){rejected=true;}if(!rejected)throw new Exception("Action allowlist");
         if(ReadObject(Path.Combine(Root,"no-such-file.json")).Count!=0)throw new Exception("Missing manifest");
-        Console.WriteLine("PASS - setup quoting, action allowlist and missing-state handling");
+        var state=new Dictionary<string,object>{{"code","processing"},{"time",100}};
+        if(ReaderStatus(state,114)!="processing (recent heartbeat)")throw new Exception("Recent processing state");
+        if(!ReaderStatus(state,115).StartsWith("inactive or stale"))throw new Exception("Stale reader state");
+        if(!ReaderStatus(state,99).StartsWith("inactive or stale"))throw new Exception("Future reader state");
+        state["time"]="NaN";
+        if(!ReaderStatus(state,100).StartsWith("inactive or stale"))throw new Exception("Invalid reader state");
+        Console.WriteLine("PASS - setup quoting, action allowlist, missing-state handling and heartbeat freshness");
     }
 }
 
