@@ -13,7 +13,7 @@ using System.Security.Cryptography;
 using Microsoft.Win32;
 
 static class SetupCore {
-    public const string Version = "0.6.12 beta";
+    public const string Version = "0.6.13 beta";
     public static string Root = AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
     public static string PSQuote(string s) { return "'" + s.Replace("'", "''") + "'"; }
     static bool HasGame(string path) { return File.Exists(Path.Combine(path, "F1Manager24", "Binaries", "Win64", "F1Manager24.exe")); }
@@ -141,6 +141,23 @@ static class SetupCore {
             detail="Package check: "+verified+" files verified";return true;
         }catch{detail="Package check failed: files are missing or changed. Extract the complete release ZIP again.";return false;}
     }
+    static string FileHash(string path) {
+        using(var sha=SHA256.Create())using(var stream=File.OpenRead(path))return BitConverter.ToString(sha.ComputeHash(stream)).Replace("-","");
+    }
+    public static string LoaderProfile(string bin) {
+        // Profiles require a complete matched pair, independently of the hashes
+        // in the installation record. Never infer compatibility from filenames.
+        try {
+            string proxy=Path.Combine(bin,"dwmapi.dll"),loader=Path.Combine(bin,@"ue4ss\UE4SS.dll");
+            if(!IsUnlinkedFile(proxy,bin)||!IsUnlinkedFile(loader,bin))return "unknown";
+            string proxyHash=FileHash(proxy),loaderHash=FileHash(loader),payload=Path.Combine(Root,"payload-v2");
+            if(proxyHash.Equals(FileHash(Path.Combine(payload,"dwmapi.dll")),StringComparison.OrdinalIgnoreCase)
+                &&loaderHash.Equals(FileHash(Path.Combine(payload,@"ue4ss\UE4SS.dll")),StringComparison.OrdinalIgnoreCase))return "bundled";
+            if(proxyHash.Equals("598D95A170389A80CEEA52D9FA208DC55FC7A652A5283E440BC19A06BC17F31E",StringComparison.OrdinalIgnoreCase)
+                &&loaderHash.Equals("DF9E6E9A2280972B1C28CE590700FEACC752B447204F8BAADEB95F5776957055",StringComparison.OrdinalIgnoreCase))return "season-2026-1.3";
+        }catch{}
+        return "unknown";
+    }
     public static Tuple<bool,string> Readiness(string game,string python) {
         var lines=new StringBuilder();string package;bool valid=PackageReady(out package);lines.AppendLine(package);
         string normalized=NormalizeGame(game);if(normalized==""){valid=false;lines.AppendLine("Game folder missing. Use Detect or Browse; Steam > Manage > Browse local files shows the correct folder.");}
@@ -183,6 +200,13 @@ static class SetupCore {
         foreach(string needed in new[]{@"ue4ss\Mods\F1ManagerEngineer\Scripts\main.lua",@"ue4ss\Mods\F1ManagerEngineer\Scripts\config.lua"})if(!owned.Contains(Path.Combine(bin,needed)))valid=false;
         if(Get(record,"loaderMode")=="borrowed")foreach(string needed in new[]{"dwmapi.dll",@"ue4ss\UE4SS.dll",@"ue4ss\UE4SS-settings.ini"})if(!dependencies.Contains(Path.Combine(bin,needed)))valid=false;
         if(Get(record,"loaderMode")=="bundled"&&new[]{"dwmapi.dll",@"ue4ss\UE4SS.dll"}.Any(p=>dependencies.Contains(Path.Combine(bin,p))))valid=false;
+        string profile=LoaderProfile(bin);
+        if(profile=="unknown") {valid=false;lines.AppendLine("Loader profile: unknown or mixed DLL pair. Restore a supported complete loader; existing files were preserved.");}
+        else {
+            lines.AppendLine((Get(record,"loaderMode")=="borrowed"?"Shared loader profile: ":"Loader profile: ")
+                +(profile=="season-2026-1.3"?"2026 Season Update 1.3 (UE4SS 0196ef29)":"bundled pinned UE4SS pair"));
+            if(profile!="bundled"&&Get(record,"loaderMode")!="borrowed") {valid=false;lines.AppendLine("The supported external loader must be recorded as shared dependencies. Choose Update to recheck ownership.");}
+        }
         try {
             string payload=Path.Combine(Root,"payload-v2");
             foreach(string source in Directory.GetFiles(payload,"*",SearchOption.AllDirectories)) {
