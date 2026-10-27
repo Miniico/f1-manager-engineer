@@ -13,7 +13,7 @@ using System.Security.Cryptography;
 using Microsoft.Win32;
 
 static class SetupCore {
-    public const string Version = "0.6.11 beta";
+    public const string Version = "0.6.12 beta";
     public static string Root = AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
     public static string PSQuote(string s) { return "'" + s.Replace("'", "''") + "'"; }
     static bool HasGame(string path) { return File.Exists(Path.Combine(path, "F1Manager24", "Binaries", "Win64", "F1Manager24.exe")); }
@@ -36,6 +36,15 @@ static class SetupCore {
     public static bool IsGame(string path) { return NormalizeGame(path)!=""; }
     public static string BundledPython {get{return Path.Combine(Root,"runtime","python","python.exe");}}
     static bool SamePath(string a,string b) {try{return !String.IsNullOrWhiteSpace(a)&&!String.IsNullOrWhiteSpace(b)&&String.Equals(Path.GetFullPath(a),Path.GetFullPath(b),StringComparison.OrdinalIgnoreCase);}catch{return false;}}
+    static bool IsUnlinkedFile(string path,string bin) {
+        string current=path;
+        while(!String.IsNullOrEmpty(current)) {
+            if((File.Exists(current)||Directory.Exists(current))&&(File.GetAttributes(current)&FileAttributes.ReparsePoint)!=0)return false;
+            if(SamePath(current,bin))return true;
+            current=Path.GetDirectoryName(current);
+        }
+        return false;
+    }
     public static Dictionary<string,object> ReadObject(string path) {
         try { return new JavaScriptSerializer().Deserialize<Dictionary<string,object>>(File.ReadAllText(path)); }
         catch { return new Dictionary<string,object>(); }
@@ -138,6 +147,9 @@ static class SetupCore {
         string probe=ProbePython(python);lines.AppendLine(probe);if(!probe.StartsWith("OK "))valid=false;
         var record=ReadObject(Path.Combine(Root,"installed-files.json"));
         if(!record.ContainsKey("files")){lines.AppendLine("No installation record. Choose Install when the checks above pass.");return Tuple.Create(false,lines.ToString());}
+        if(record.ContainsKey("schemaVersion")) {
+            if(Get(record,"schemaVersion")!="2"||!new[]{"bundled","borrowed"}.Contains(Get(record,"loaderMode"))||!record.ContainsKey("borrowedDependencies"))valid=false;
+        }else if(record.ContainsKey("borrowedDependencies")||record.ContainsKey("loaderMode"))valid=false;
         if(!String.Equals(normalized,NormalizeGame(Get(record,"gameDir")),StringComparison.OrdinalIgnoreCase)){valid=false;lines.AppendLine("The selected game differs from the installed game. Use Detect to select the registered game.");}
         if(!SamePath(python,Get(record,"python"))){valid=false;lines.AppendLine("The selected runtime differs from the registered reader. Update adopts the included runtime.");}
         var entries=record["files"] as System.Collections.IEnumerable;var owned=new HashSet<string>(StringComparer.OrdinalIgnoreCase);int count=0;
@@ -146,12 +158,39 @@ static class SetupCore {
             var entry=item as Dictionary<string,object>;if(entry==null){valid=false;continue;}
             try {
                 string path=Path.GetFullPath(Get(entry,"path"));
-                if(!path.StartsWith(binPrefix,StringComparison.OrdinalIgnoreCase)||!owned.Add(path))throw new InvalidDataException();
+                if(!path.StartsWith(binPrefix,StringComparison.OrdinalIgnoreCase)||!IsUnlinkedFile(path,bin)||!owned.Add(path))throw new InvalidDataException();
                 using(var sha=SHA256.Create())using(var stream=File.OpenRead(path))if(!BitConverter.ToString(sha.ComputeHash(stream)).Replace("-","").Equals(Get(entry,"sha256"),StringComparison.OrdinalIgnoreCase))throw new InvalidDataException();
                 count++;
             }catch{valid=false;}
         }
-        foreach(string needed in new[]{"dwmapi.dll",@"ue4ss\UE4SS.dll",@"ue4ss\Mods\F1ManagerEngineer\Scripts\main.lua",@"ue4ss\Mods\F1ManagerEngineer\Scripts\config.lua"})if(!owned.Contains(Path.Combine(bin,needed)))valid=false;
+        var dependencies=new HashSet<string>(StringComparer.OrdinalIgnoreCase);int borrowedCount=0;
+        if(record.ContainsKey("borrowedDependencies")) {
+            var borrowed=record["borrowedDependencies"] as System.Collections.IEnumerable;
+            var allowed=new HashSet<string>(new[]{"dwmapi.dll",@"ue4ss\UE4SS.dll",@"ue4ss\UE4SS-settings.ini",@"ue4ss\UE4SS_SDK_Backends\UE4SS.json",@"ue4ss\Mods\mods.txt",@"ue4ss\Mods\shared\UEHelpers\UEHelpers.lua",@"ue4ss\Mods\shared\ModMenu\ModMenu.lua"},StringComparer.OrdinalIgnoreCase);
+            if(borrowed==null)valid=false;else foreach(var item in borrowed) {
+                var entry=item as Dictionary<string,object>;
+                try {
+                    if(entry==null)throw new InvalidDataException();
+                    string path=Path.GetFullPath(Get(entry,"path"));
+                    if(!path.StartsWith(binPrefix,StringComparison.OrdinalIgnoreCase)||!allowed.Contains(path.Substring(binPrefix.Length))||!IsUnlinkedFile(path,bin)||owned.Contains(path)||!dependencies.Add(path))throw new InvalidDataException();
+                    using(var sha=SHA256.Create())using(var stream=File.OpenRead(path))if(!BitConverter.ToString(sha.ComputeHash(stream)).Replace("-","").Equals(Get(entry,"sha256"),StringComparison.OrdinalIgnoreCase))throw new InvalidDataException();
+                    borrowedCount++;
+                }catch{valid=false;}
+            }
+            lines.AppendLine("Shared dependencies verified: "+borrowedCount+" (preserved by Update and Uninstall)");
+        }
+        foreach(string needed in new[]{"dwmapi.dll",@"ue4ss\UE4SS.dll"})if(!owned.Contains(Path.Combine(bin,needed))&&!dependencies.Contains(Path.Combine(bin,needed)))valid=false;
+        foreach(string needed in new[]{@"ue4ss\Mods\F1ManagerEngineer\Scripts\main.lua",@"ue4ss\Mods\F1ManagerEngineer\Scripts\config.lua"})if(!owned.Contains(Path.Combine(bin,needed)))valid=false;
+        if(Get(record,"loaderMode")=="borrowed")foreach(string needed in new[]{"dwmapi.dll",@"ue4ss\UE4SS.dll",@"ue4ss\UE4SS-settings.ini"})if(!dependencies.Contains(Path.Combine(bin,needed)))valid=false;
+        if(Get(record,"loaderMode")=="bundled"&&new[]{"dwmapi.dll",@"ue4ss\UE4SS.dll"}.Any(p=>dependencies.Contains(Path.Combine(bin,p))))valid=false;
+        try {
+            string payload=Path.Combine(Root,"payload-v2");
+            foreach(string source in Directory.GetFiles(payload,"*",SearchOption.AllDirectories)) {
+                string relative=source.Substring(payload.Length+1),target=Path.Combine(bin,relative);
+                bool isMod=relative.StartsWith(@"ue4ss\Mods\F1ManagerEngineer\",StringComparison.OrdinalIgnoreCase);
+                if(!owned.Contains(target)&&(isMod||!dependencies.Contains(target)))valid=false;
+            }
+        }catch{valid=false;}
         try {
             string config=File.ReadAllText(Path.Combine(bin,@"ue4ss\Mods\F1ManagerEngineer\Scripts\config.lua"));
             foreach(string localFile in new[]{@"data\snapshot.lua","StartReader.vbs"})if(!config.Contains(Path.Combine(Root,localFile).Replace('\\','/').Replace("'","\\'"))) {valid=false;lines.AppendLine("Reader paths point to another package folder. Choose Update from this permanent folder.");break;}
@@ -160,7 +199,7 @@ static class SetupCore {
         foreach(string required in new[]{"StartReader.vbs","StartReader.ps1","bridge.py"})if(!File.Exists(Path.Combine(Root,required))){valid=false;lines.AppendLine("Reader launcher missing. Extract the complete ZIP again.");}
         string host=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows),"System32","wscript.exe");
         if(!File.Exists(host)){valid=false;lines.AppendLine("Windows Script Host unavailable. The automatic reader cannot start; use StartReader.ps1 manually.");}
-        lines.AppendLine(valid?"READY - loader, reader runtime and installation files verified. Open the game, load a career and press F8.":"NOT READY - resolve the checks above. Changed or missing installed files require Update or a clean installation.");
+        lines.AppendLine(valid?"READY - loader, reader runtime and installation files verified. Open the game, load a career and press F8.":"NOT READY - resolve the checks above. Update rechecks shared dependencies and repairs unchanged Engineer files. Compatibility conflicts need review; do not delete another mod's loader.");
         lines.AppendLine("This offline check does not run the game or verify F8 on every game screen.");
         return Tuple.Create(valid,lines.ToString());
     }
