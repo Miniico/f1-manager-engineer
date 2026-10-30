@@ -11,11 +11,33 @@ using System.Windows.Forms;
 using System.Web.Script.Serialization;
 using System.Security.Cryptography;
 using Microsoft.Win32;
+using System.Reflection;
+
+[assembly: AssemblyTitle("F1 Manager Engineer Setup")]
+[assembly: AssemblyDescription("Local installer for the F1 Manager Engineer mod")]
+[assembly: AssemblyCompany("Miniico")]
+[assembly: AssemblyProduct("F1 Manager Engineer")]
+[assembly: AssemblyVersion("0.6.16.0")]
+[assembly: AssemblyFileVersion("0.6.16.0")]
+[assembly: AssemblyInformationalVersion("0.6.16 beta")]
 
 static class SetupCore {
-    public const string Version = "0.6.15 beta";
+    public const string Version = "0.6.16 beta";
     public static string Root = AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
-    public static string PSQuote(string s) { return "'" + s.Replace("'", "''") + "'"; }
+    // ProcessStartInfo.Arguments uses Windows argv quoting, not PowerShell source.
+    // Double backslashes before quotes and before the final closing quote.
+    public static string WindowsArgument(string value) {
+        if(value==null)throw new ArgumentNullException("value");
+        if(value.IndexOf('\0')>=0)throw new ArgumentException("Arguments cannot contain NUL");
+        var quoted=new StringBuilder("\"");int slashes=0;
+        foreach(char c in value) {
+            if(c=='\\'){slashes++;continue;}
+            if(c=='"'){quoted.Append('\\',slashes*2+1);quoted.Append(c);}
+            else {quoted.Append('\\',slashes);quoted.Append(c);}
+            slashes=0;
+        }
+        quoted.Append('\\',slashes*2);quoted.Append('"');return quoted.ToString();
+    }
     static bool HasGame(string path) { return File.Exists(Path.Combine(path, "F1Manager24", "Binaries", "Win64", "F1Manager24.exe")); }
     public static string NormalizeGame(string path) {
         if(String.IsNullOrWhiteSpace(path))return "";
@@ -227,15 +249,16 @@ static class SetupCore {
         lines.AppendLine("This offline check does not run the game or verify F8 on every game screen.");
         return Tuple.Create(valid,lines.ToString());
     }
-    public static string ScriptCommand(string action,string game,string python) {
+    public static string PowerShellArguments(string action,string game,string python) {
         if(!new[]{"Install","Update","Uninstall"}.Contains(action))throw new ArgumentException("Unknown action");
-        string command="$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; [Console]::OutputEncoding=New-Object System.Text.UTF8Encoding; $OutputEncoding=[Console]::OutputEncoding; try { & "+PSQuote(Path.Combine(Root,action+".ps1"));
-        if(action=="Install")command+=" -GameDir "+PSQuote(NormalizeGame(game))+" -Python "+PSQuote(python);
-        return command+"; if(-not $?) {exit 1}; exit 0 } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }";
+        string arguments="-NoProfile -NonInteractive -InputFormat Text -OutputFormat Text -ExecutionPolicy Bypass -File "
+            +WindowsArgument(Path.Combine(Root,"InstallerAction.ps1"))+" -Action "+WindowsArgument(action);
+        if(action=="Install")arguments+=" -GameDir "+WindowsArgument(NormalizeGame(game))+" -Python "+WindowsArgument(python);
+        return arguments;
     }
     public static Tuple<int,string> Execute(string action,string game,string python) {
         string ps=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows),"System32","WindowsPowerShell","v1.0","powershell.exe");
-        return Run(ps,"-NoProfile -NonInteractive -InputFormat Text -OutputFormat Text -ExecutionPolicy Bypass -EncodedCommand "+Convert.ToBase64String(Encoding.Unicode.GetBytes(ScriptCommand(action,game,python))),null,120000);
+        return Run(ps,PowerShellArguments(action,game,python),null,120000);
     }
     public static string ReaderStatus(Dictionary<string,object> state,double now) {
         string code=Get(state,"code");
@@ -275,10 +298,9 @@ static class SetupCore {
         return report.ToString();
     }
     public static void SelfTest() {
-        if(PSQuote("a'b")!="'a''b'")throw new Exception("PowerShell quoting");
-        string command=ScriptCommand("Install",@"D:\A's game\$()",@"C:\Python\python.exe");
-        if(!PSQuote(@"D:\A's game\$()").Contains("'D:\\A''s game\\$()'"))throw new Exception("Path quoting");
-        bool rejected=false;try{ScriptCommand("Erase","","");}catch(ArgumentException){rejected=true;}if(!rejected)throw new Exception("Action allowlist");
+        if(WindowsArgument("a'b $()")!="\"a'b $()\"")throw new Exception("Windows argument quoting");
+        if(WindowsArgument("a\"b\\")!="\"a\\\"b\\\\\"")throw new Exception("Windows quote and trailing backslash");
+        bool rejected=false;try{PowerShellArguments("Erase","","");}catch(ArgumentException){rejected=true;}if(!rejected)throw new Exception("Action allowlist");
         if(ReadObject(Path.Combine(Root,"no-such-file.json")).Count!=0)throw new Exception("Missing manifest");
         var state=new Dictionary<string,object>{{"code","processing"},{"time",100}};
         if(ReaderStatus(state,114)!="processing (recent heartbeat)")throw new Exception("Recent processing state");
@@ -332,7 +354,7 @@ class SetupWindow:Form {
     async Task Check(){state.Text="Checking...";string normal=SetupCore.NormalizeGame(game.Text);if(normal!="")game.Text=normal;string g=game.Text,p=python.Text;output.Text=await Task.Run(()=>SetupCore.Diagnostics(g,p));state.Text="Check complete. Copy report includes no personal paths or saves.";}
     async Task Change(string action){
         if(Process.GetProcessesByName("F1Manager24").Length>0){state.Text="Close F1 Manager 2024 first";return;}
-        if(!File.Exists(Path.Combine(SetupCore.Root,action+".ps1"))){state.Text="Extract the complete release folder first";return;}
+        if(!File.Exists(Path.Combine(SetupCore.Root,action+".ps1"))||!File.Exists(Path.Combine(SetupCore.Root,"InstallerAction.ps1"))){state.Text="Extract the complete release folder first";return;}
         if(action=="Install"){
             string normal=SetupCore.NormalizeGame(game.Text);if(normal==""){state.Text="Game folder not found";output.Text="In Steam, choose Manage > Browse local files, then select that folder with Browse. Subfolders are recognised automatically.";return;}game.Text=normal;
             string path=python.Text;string probe=await Task.Run(()=>SetupCore.ProbePython(path));if(!probe.StartsWith("OK ")){state.Text="Reader runtime needs attention";output.Text=probe;return;}
