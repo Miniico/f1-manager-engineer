@@ -17,12 +17,12 @@ using System.Reflection;
 [assembly: AssemblyDescription("Local installer for the F1 Manager Engineer mod")]
 [assembly: AssemblyCompany("Miniico")]
 [assembly: AssemblyProduct("F1 Manager Engineer")]
-[assembly: AssemblyVersion("0.6.18.0")]
-[assembly: AssemblyFileVersion("0.6.18.0")]
-[assembly: AssemblyInformationalVersion("0.6.18 beta")]
+[assembly: AssemblyVersion("0.6.19.0")]
+[assembly: AssemblyFileVersion("0.6.19.0")]
+[assembly: AssemblyInformationalVersion("0.6.19 beta")]
 
 static class SetupCore {
-    public const string Version = "0.6.18 beta";
+    public const string Version = "0.6.19 beta";
     public static string Root = AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
     // ProcessStartInfo.Arguments uses Windows argv quoting, not PowerShell source.
     // Double backslashes before quotes and before the final closing quote.
