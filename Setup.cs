@@ -145,23 +145,29 @@ static class SetupCore {
         }catch{return "Reader runtime could not start. Extract the complete ZIP again, then use Check.";}
     }
     public static bool PackageReady(out string detail) {
-        string listing=Path.Combine(Root,"FILE-HASHES.sha256");int verified=0;
+        string listing=Path.Combine(Root,"FILE-HASHES.sha256");int verified=0,lineNumber=0;
         if(!File.Exists(listing)){detail="Package check: missing file list. Extract the COMPLETE release ZIP again.";return false;}
         string prefix=Path.GetFullPath(Root).TrimEnd('\\')+"\\";
+        string current="file list";
         try {
             foreach(string line in File.ReadAllLines(listing)) {
+                lineNumber++;
                 if(String.IsNullOrWhiteSpace(line))continue;
-                if(line.Length<67||line.Substring(64,2)!="  ")throw new InvalidDataException();
+                current="file list entry "+lineNumber;
+                if(line.Length<67||line.Substring(64,2)!="  "||!System.Text.RegularExpressions.Regex.IsMatch(line.Substring(0,64),"\\A[0-9a-fA-F]{64}\\z"))throw new InvalidDataException();
                 string file=Path.GetFullPath(Path.Combine(Root,line.Substring(66).Replace('/',Path.DirectorySeparatorChar)));
-                if(!file.StartsWith(prefix,StringComparison.OrdinalIgnoreCase)||!File.Exists(file))throw new InvalidDataException();
+                if(!file.StartsWith(prefix,StringComparison.OrdinalIgnoreCase))throw new InvalidDataException();
+                // Only package-relative names appear in the copyable report.
+                current="package file '"+file.Substring(prefix.Length).Replace('\\','/')+"'";
+                if(!File.Exists(file)){detail="Package check failed: missing "+current+". Extract the complete release ZIP again.";return false;}
                 using(var sha=SHA256.Create())using(var stream=File.OpenRead(file)) {
-                    if(!BitConverter.ToString(sha.ComputeHash(stream)).Replace("-","").Equals(line.Substring(0,64),StringComparison.OrdinalIgnoreCase))throw new InvalidDataException();
+                    if(!BitConverter.ToString(sha.ComputeHash(stream)).Replace("-","").Equals(line.Substring(0,64),StringComparison.OrdinalIgnoreCase)){detail="Package check failed: changed "+current+". Extract the complete release ZIP again.";return false;}
                 }
                 verified++;
             }
-            if(verified<20)throw new InvalidDataException();
+            if(verified<20){detail="Package check failed: incomplete file list ("+verified+" files verified). Extract the complete release ZIP again.";return false;}
             detail="Package check: "+verified+" files verified";return true;
-        }catch{detail="Package check failed: files are missing or changed. Extract the complete release ZIP again.";return false;}
+        }catch{detail="Package check failed: unreadable or invalid "+current+". Extract the complete release ZIP again.";return false;}
     }
     static string FileHash(string path) {
         using(var sha=SHA256.Create())using(var stream=File.OpenRead(path))return BitConverter.ToString(sha.ComputeHash(stream)).Replace("-","");
@@ -173,10 +179,12 @@ static class SetupCore {
             string proxy=Path.Combine(bin,"dwmapi.dll"),loader=Path.Combine(bin,@"ue4ss\UE4SS.dll");
             if(!IsUnlinkedFile(proxy,bin)||!IsUnlinkedFile(loader,bin))return "unknown";
             string proxyHash=FileHash(proxy),loaderHash=FileHash(loader),payload=Path.Combine(Root,"payload-v2");
-            if(proxyHash.Equals(FileHash(Path.Combine(payload,"dwmapi.dll")),StringComparison.OrdinalIgnoreCase)
-                &&loaderHash.Equals(FileHash(Path.Combine(payload,@"ue4ss\UE4SS.dll")),StringComparison.OrdinalIgnoreCase))return "bundled";
+            // A damaged extraction must not hide an independently pinned shared
+            // profile. PackageReady still blocks readiness for that extraction.
             if(proxyHash.Equals("598D95A170389A80CEEA52D9FA208DC55FC7A652A5283E440BC19A06BC17F31E",StringComparison.OrdinalIgnoreCase)
                 &&loaderHash.Equals("DF9E6E9A2280972B1C28CE590700FEACC752B447204F8BAADEB95F5776957055",StringComparison.OrdinalIgnoreCase))return "season-2026-1.3";
+            if(proxyHash.Equals(FileHash(Path.Combine(payload,"dwmapi.dll")),StringComparison.OrdinalIgnoreCase)
+                &&loaderHash.Equals(FileHash(Path.Combine(payload,@"ue4ss\UE4SS.dll")),StringComparison.OrdinalIgnoreCase))return "bundled";
         }catch{}
         return "unknown";
     }
@@ -223,7 +231,7 @@ static class SetupCore {
         if(Get(record,"loaderMode")=="borrowed")foreach(string needed in new[]{"dwmapi.dll",@"ue4ss\UE4SS.dll",@"ue4ss\UE4SS-settings.ini"})if(!dependencies.Contains(Path.Combine(bin,needed)))valid=false;
         if(Get(record,"loaderMode")=="bundled"&&new[]{"dwmapi.dll",@"ue4ss\UE4SS.dll"}.Any(p=>dependencies.Contains(Path.Combine(bin,p))))valid=false;
         string profile=LoaderProfile(bin);
-        if(profile=="unknown") {valid=false;lines.AppendLine("Loader profile: unknown or mixed DLL pair. Restore a supported complete loader; existing files were preserved.");}
+        if(profile=="unknown") {valid=false;lines.AppendLine("Loader profile: unknown or mixed DLL pair. If Package check failed, extract the complete release ZIP and use Check first. Otherwise restore a supported complete loader from its original mod package; existing files were preserved.");}
         else {
             lines.AppendLine((Get(record,"loaderMode")=="borrowed"?"Shared loader profile: ":"Loader profile: ")
                 +(profile=="season-2026-1.3"?"2026 Season Update 1.3 (UE4SS 0196ef29)":"bundled pinned UE4SS pair"));
@@ -294,7 +302,7 @@ static class SetupCore {
         var state=ReadObject(Path.Combine(Root,"data","reader-state.json"));
         report.AppendLine("Reader status: "+ReaderStatus(state,(DateTime.UtcNow-new DateTime(1970,1,1,0,0,0,DateTimeKind.Utc)).TotalSeconds));
         report.AppendLine("Saved snapshot: "+(File.Exists(Path.Combine(Root,"data","snapshot.lua"))?"present (last successful output; freshness not confirmed)":"absent"));
-        report.AppendLine("Report excludes paths, usernames, save contents and log excerpts. Nothing is uploaded.");
+        report.AppendLine("Report excludes personal paths, usernames, save contents and log excerpts. Nothing is uploaded.");
         return report.ToString();
     }
     public static void SelfTest() {
